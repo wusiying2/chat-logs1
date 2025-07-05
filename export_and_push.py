@@ -1,36 +1,48 @@
-import sqlite3
-import csv
+# export_and_push.py
 import os
-import datetime
+import time
+import hashlib
+from git import Repo
 
-def export_chatlog():
-    db_file = "chatlog.db"
-    csv_file = "chatlog_export.csv"
+HASH_RECORD_FILE = "message_hashes.txt"
+CHATLOG_FILE = "防撞聊天记录.txt"
+LAST_HASH_FILE = ".last_hash"
 
-    # 连接 SQLite 数据库
-    conn = sqlite3.connect(db_file)
-    cursor = conn.cursor()
+# 读取旧的 hash
+old_hash = ""
+if os.path.exists(LAST_HASH_FILE):
+    with open(LAST_HASH_FILE, "r", encoding="utf-8") as f:
+        old_hash = f.read().strip()
 
-    # 获取所有聊天记录
-    cursor.execute("SELECT * FROM messages")
-    rows = cursor.fetchall()
+def calculate_file_hash(filepath):
+    hasher = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        buf = f.read()
+        hasher.update(buf)
+    return hasher.hexdigest()
 
-    # 写入 CSV 文件
-    with open(csv_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["id", "user_id", "message", "timestamp"])
-        writer.writerows(rows)
+def auto_git_push():
+    try:
+        new_hash = calculate_file_hash(CHATLOG_FILE)
+        if new_hash == old_hash:
+            print("⚠️ 没有新变更，跳过推送")
+            return
 
-    conn.close()
-    print("✅ 导出成功：chatlog_export.csv")
+        with open(LAST_HASH_FILE, "w", encoding="utf-8") as f:
+            f.write(new_hash)
 
-def git_push():
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    os.system("git add chatlog_export.csv")
-    os.system(f'git commit -m "📦 自动备份聊天记录 {timestamp}"')
-    os.system("git push origin main")
-    print("✅ 成功推送到 GitHub 仓库！")
+        repo = Repo(".")
+        repo.git.add(CHATLOG_FILE)
+        if not repo.is_dirty():
+            print("⚠️ 没有需要提交的变更")
+            return
+
+        repo.index.commit(f"📄 自动更新聊天记录 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        origin = repo.remote(name="origin")
+        origin.push()
+        print("✅ 成功推送变更到 GitHub")
+    except Exception as e:
+        print(f"❌ Git 推送失败: {e}")
 
 if __name__ == "__main__":
-    export_chatlog()
-    git_push()
+    auto_git_push()

@@ -1,75 +1,99 @@
-from flask import Flask, request, abort
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
-from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
-from linebot.v3.messaging.models import TextMessage
-from linebot.v3 import WebhookHandler
-
+import os
+import hashlib
 import sqlite3
-import datetime
+from flask import Flask, request, abort
+from dotenv import load_dotenv
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
+# 加载 .env
+load_dotenv()
+channel_access_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+channel_secret = os.getenv("LINE_CHANNEL_SECRET")
+
+# 初始化 LINE API
+line_bot_api = LineBotApi(channel_access_token)
+handler = WebhookHandler(channel_secret)
+
+# 初始化 Flask
 app = Flask(__name__)
 
-# ✅ 你的 LINE Bot 密钥
-CHANNEL_SECRET = "abe79d90d2809e5cdd68c95861d8f157"
-CHANNEL_ACCESS_TOKEN = "GStbnfuzcKJ/jjwuoIREu99P8grH0LRoZACmdv7r1a8OvaxGCpJxDeS5OGfhYNACE87rfSsgL7YHGdy11O/+rYDejf8BWnjZwyV0HBC9/VIgZveoGFD0Hqrabxi9VGro//tFuFfEG577WUO3kFDvTAdB04t89/1O/w1cDnyilFU="
+# 文件路径
+CHATLOG_PATH = "防撞聊天记录.txt"
+HASH_PATH = "message_hashes.txt"
+DB_PATH = "chatlogs.db"
 
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
+# 初始化数据库
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                text TEXT,
+                timestamp INTEGER,
+                UNIQUE(user_id, text, timestamp)
+            )
+        """)
+        conn.commit()
 
-# ✅ 保存聊天记录到 SQLite
-def save_message_to_db(user_id, message_text):
-    conn = sqlite3.connect("chatlog.db")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            message TEXT,
-            timestamp TEXT
-        )
-    ''')
-    cursor.execute('''
-        INSERT INTO messages (user_id, message, timestamp)
-        VALUES (?, ?, ?)
-    ''', (user_id, message_text, datetime.datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+init_db()
 
-# ✅ Webhook 接收入口
+# 哈希去重
+def load_hashes():
+    if os.path.exists(HASH_PATH):
+        with open(HASH_PATH, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f.readlines())
+    return set()
+
+def save_hash(hash_value):
+    with open(HASH_PATH, "a", encoding="utf-8") as f:
+        f.write(hash_value + "\n")
+
+def hash_message(user_id, text, timestamp):
+    return hashlib.sha256(f"{user_id}|{text}|{timestamp}".encode("utf-8")).hexdigest()
+
+# 保存消息
+def save_message(user_id, text, timestamp):
+    log_line = f"[{timestamp}] {user_id}: {text}"
+    with open(CHATLOG_PATH, "a", encoding="utf-8") as f:
+        f.write(log_line + "\n")
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO messages (user_id, text, timestamp) VALUES (?, ?, ?)",
+                       (user_id, text, timestamp))
+        conn.commit()
+
+# Webhook 路由
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature")
+    signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
 
     try:
         handler.handle(body, signature)
-    except Exception as e:
-        print("❌ Webhook 错误:", e)
-        print("📦 请求内容:", body)
+    except InvalidSignatureError:
         abort(400)
 
     return "OK"
 
-# ✅ 处理用户消息
-@handler.add(MessageEvent, message=TextMessageContent)
+# 消息处理
+@handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_id = event.source.user_id
-    msg = event.message.text
+    user_id = event.source.user_id if event.source.user_id else "Unknown"
+    text = event.message.text
+    timestamp = event.timestamp
 
-    print(f"✅ 收到用户消息：{msg}（来自用户：{user_id}）")
+    msg_hash = hash_message(user_id, text, timestamp)
+    hashes = load_hashes()
+    if msg_hash in hashes:
+        print("跳过重复消息")
+        return
 
-    # 保存到数据库
-    save_message_to_db(user_id, msg)
-
-    # 回复用户（必须加 type="text"）
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            reply_token=event.reply_token,
-            messages=[
-                TextMessage(type="text", text=f"你说了：{msg}")
-            ]
-        )
+    save_message(user_id, text, timestamp)
+    save_hash(msg_hash)
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    app.run(port=8000)

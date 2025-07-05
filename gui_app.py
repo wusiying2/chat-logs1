@@ -1,101 +1,103 @@
 import sys
 import requests
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QTextEdit, QPushButton,
-    QLineEdit, QLabel, QHBoxLayout
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QLabel, QLineEdit, QSpinBox
 )
-from PyQt6.QtCore import QTimer, Qt
-from threading import Thread
-from export_and_push import push_once, auto_push_loop
+from PyQt6.QtCore import QTimer
 
-class ChatLogApp(QWidget):
+class ChatLogViewer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("实时聊天记录查看器")
-        self.resize(800, 600)
+        self.setWindowTitle("聊天记录查看器 - MoodFitAI")
+        self.setGeometry(100, 100, 800, 600)
 
-        layout = QVBoxLayout()
+        self.layout = QVBoxLayout()
 
-        # 地址输入
-        self.url_input = QLineEdit("https://raw.githubusercontent.com/wusiying2/chat-logs/main/防撞聊天记录.txt")
-        layout.addWidget(QLabel("🔗 GitHub 原始地址："))
-        layout.addWidget(self.url_input)
+        # 链接输入和刷新倒计时
+        self.url_layout = QHBoxLayout()
+        self.url_input = QLineEdit("https://raw.githubusercontent.com/wusiying2/chat-logs/main/%E9%98%B2%E6%92%9E%E8%81%8A%E5%A4%A9%E8%AE%B0%E5%BD%95.txt")
+        self.refresh_button = QPushButton("立即刷新")
+        self.url_layout.addWidget(QLabel("聊天记录链接:"))
+        self.url_layout.addWidget(self.url_input)
+        self.url_layout.addWidget(self.refresh_button)
 
-        # 搜索栏
-        search_layout = QHBoxLayout()
+        # 搜索功能
+        self.search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 输入关键词进行搜索...")
-        search_btn = QPushButton("搜索")
-        search_btn.clicked.connect(self.search_logs)
-        search_layout.addWidget(self.search_input)
-        search_layout.addWidget(search_btn)
-        layout.addLayout(search_layout)
+        self.search_button = QPushButton("搜索")
+        self.search_layout.addWidget(QLabel("关键词:"))
+        self.search_layout.addWidget(self.search_input)
+        self.search_layout.addWidget(self.search_button)
 
-        # 显示聊天记录
+        # 倒计时与间隔设置
+        self.timer_layout = QHBoxLayout()
+        self.timer_label = QLabel("下次刷新倒计时: 5 秒")
+        self.interval_input = QSpinBox()
+        self.interval_input.setMinimum(2)
+        self.interval_input.setMaximum(3600)
+        self.interval_input.setValue(5)
+        self.timer_layout.addWidget(QLabel("刷新间隔(秒):"))
+        self.timer_layout.addWidget(self.interval_input)
+        self.timer_layout.addWidget(self.timer_label)
+
+        # 文本区域
         self.text_area = QTextEdit()
         self.text_area.setReadOnly(True)
-        layout.addWidget(self.text_area)
 
-        # 底部按钮
-        btn_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton("🔁 立即刷新")
-        self.refresh_btn.clicked.connect(self.load_logs)
+        # 加入布局
+        self.layout.addLayout(self.url_layout)
+        self.layout.addLayout(self.search_layout)
+        self.layout.addLayout(self.timer_layout)
+        self.layout.addWidget(self.text_area)
 
-        self.push_btn = QPushButton("🚀 立即推送")
-        self.push_btn.clicked.connect(self.manual_push)
+        self.setLayout(self.layout)
 
-        self.status_label = QLabel("⏱ 正在启动...")
+        # 定时器设置
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_chatlog)
+        self.timer.start(5000)
 
-        btn_layout.addWidget(self.refresh_btn)
-        btn_layout.addWidget(self.push_btn)
-        btn_layout.addWidget(self.status_label)
-        layout.addLayout(btn_layout)
+        self.countdown = 5
+        self.count_timer = QTimer(self)
+        self.count_timer.timeout.connect(self.update_countdown)
+        self.count_timer.start(1000)
 
-        self.setLayout(layout)
+        # 事件连接
+        self.refresh_button.clicked.connect(self.refresh_chatlog)
+        self.search_button.clicked.connect(self.search_keyword)
+        self.interval_input.valueChanged.connect(self.update_interval)
 
-        # 定时刷新
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.load_logs)
-        self.timer.start(5000)  # 每5秒刷新
+    def update_interval(self):
+        new_interval = self.interval_input.value() * 1000
+        self.timer.setInterval(new_interval)
+        self.countdown = self.interval_input.value()
 
-        # 启动后台自动推送线程
-        Thread(target=auto_push_loop, daemon=True).start()
+    def update_countdown(self):
+        self.countdown -= 1
+        if self.countdown <= 0:
+            self.countdown = self.interval_input.value()
+        self.timer_label.setText(f"下次刷新倒计时: {self.countdown} 秒")
 
-        # 初始化加载
-        self.load_logs()
-
-    def load_logs(self):
+    def refresh_chatlog(self):
         url = self.url_input.text()
         try:
             response = requests.get(url)
+            response.encoding = 'utf-8'
             if response.status_code == 200:
                 self.text_area.setPlainText(response.text)
-                self.status_label.setText("✅ 已刷新")
-            else:
-                self.status_label.setText(f"❌ 获取失败: 状态码 {response.status_code}")
         except Exception as e:
-            self.status_label.setText(f"❌ 请求错误: {str(e)}")
+            self.text_area.setPlainText(f"❌ 无法加载聊天记录: {str(e)}")
 
-    def search_logs(self):
+    def search_keyword(self):
         keyword = self.search_input.text()
-        all_text = self.text_area.toPlainText()
         if keyword:
-            matched_lines = "\n".join([line for line in all_text.splitlines() if keyword in line])
-            self.text_area.setPlainText(matched_lines or "⚠️ 没有匹配结果")
-            self.status_label.setText("🔍 搜索完成")
-        else:
-            self.load_logs()
-
-    def manual_push(self):
-        self.status_label.setText("🚀 正在推送中...")
-        Thread(target=self._push_thread, daemon=True).start()
-
-    def _push_thread(self):
-        success = push_once()
-        self.status_label.setText("✅ 推送成功" if success else "⚠️ 无需推送")
+            content = self.text_area.toPlainText()
+            results = [line for line in content.splitlines() if keyword in line]
+            self.text_area.setPlainText("\n".join(results) if results else "🔍 未找到任何匹配项")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = ChatLogApp()
-    window.show()
+    viewer = ChatLogViewer()
+    viewer.show()
     sys.exit(app.exec())
